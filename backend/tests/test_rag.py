@@ -8,7 +8,7 @@
 
 import pytest
 from unittest.mock import MagicMock, patch
-from backend.modules.rag import NaiveRAG, HybridRAG, RAGQuery, RAGResult
+from backend.modules.rag import NaiveRAG, HybridRAG, ContextualRAG, RAGQuery, RAGResult
 
 class TestNaiveRAG:
     """Tests for NaiveRAG pipeline."""
@@ -167,3 +167,94 @@ class TestHybridRAG:
 
         # No duplicates in source chunks
         assert len(result.source_chunks) == len(set(result.source_chunks))
+
+
+
+#================================================================
+class TestContextualRAG:
+    """Tests for ContextualRAG pipeline."""
+
+    @patch("backend.modules.rag.contextual_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.contextual_rag.Groq")
+    def test_contextual_rag_returns_rag_result(self, mock_groq, mock_chroma):
+        """ContextualRAG.run() must return a RAGResult object."""
+
+        # Mock ChromaDB
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {
+            "documents": [["Photosynthesis converts sunlight into glucose."]]
+        }
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+
+        # Mock Groq — called twice: once for rewrite, once for answer
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Photosynthesis is the process of converting light."
+        mock_groq.return_value.chat.completions.create.return_value = MagicMock(
+            choices=[mock_choice]
+        )
+
+        rag = ContextualRAG()
+        query = RAGQuery(query_text="What is photosynthesis?", top_k=1)
+        result = rag.run(query)
+
+        assert isinstance(result, RAGResult)
+        assert result.rag_type == "contextual"
+        assert len(result.answer) > 0
+
+    @patch("backend.modules.rag.contextual_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.contextual_rag.Groq")
+    def test_contextual_rag_saves_history(self, mock_groq, mock_chroma):
+        """After run(), history must contain 2 turns (user + assistant)."""
+
+        # Mock ChromaDB
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {
+            "documents": [["Photosynthesis converts sunlight into glucose."]]
+        }
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+
+        # Mock Groq
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Photosynthesis converts sunlight into energy."
+        mock_groq.return_value.chat.completions.create.return_value = MagicMock(
+            choices=[mock_choice]
+        )
+
+        rag = ContextualRAG()
+        query = RAGQuery(query_text="What is photosynthesis?", top_k=1)
+        rag.run(query)
+
+        # History must have 2 entries: user turn + assistant turn
+        assert len(rag._history) == 2
+        assert rag._history[0]["role"] == "user"
+        assert rag._history[1]["role"] == "assistant"
+
+    @patch("backend.modules.rag.contextual_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.contextual_rag.Groq")
+    def test_contextual_rag_clear_history(self, mock_groq, mock_chroma):
+        """clear_history() must wipe all conversation turns."""
+
+        # Mock ChromaDB
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {
+            "documents": [["Photosynthesis converts sunlight into glucose."]]
+        }
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+
+        # Mock Groq
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Some answer."
+        mock_groq.return_value.chat.completions.create.return_value = MagicMock(
+            choices=[mock_choice]
+        )
+
+        rag = ContextualRAG()
+        query = RAGQuery(query_text="What is photosynthesis?", top_k=1)
+
+        # Run once to build history
+        rag.run(query)
+        assert len(rag._history) == 2
+
+        # Clear history
+        rag.clear_history()
+        assert len(rag._history) == 0
