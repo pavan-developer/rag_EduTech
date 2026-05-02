@@ -8,7 +8,7 @@
 
 import pytest
 from unittest.mock import MagicMock, patch
-from backend.modules.rag import NaiveRAG, HybridRAG, ContextualRAG, RAGQuery, RAGResult
+from backend.modules.rag import NaiveRAG, HybridRAG, ContextualRAG, SelfQueryRAG, RAGQuery, RAGResult
 
 class TestNaiveRAG:
     """Tests for NaiveRAG pipeline."""
@@ -258,3 +258,96 @@ class TestContextualRAG:
         # Clear history
         rag.clear_history()
         assert len(rag._history) == 0
+
+
+
+#===============================================================
+
+
+
+
+class TestSelfQueryRAG:
+    """Tests for SelfQueryRAG pipeline."""
+
+    @patch("backend.modules.rag.self_query_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.self_query_rag.Groq")
+    def test_self_query_rag_returns_rag_result(self, mock_groq, mock_chroma):
+        """SelfQueryRAG.run() must return a RAGResult object."""
+
+        # Mock ChromaDB
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {
+            "documents": [["Cells are the basic unit of life in Biology."]]
+        }
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+
+        # Mock Groq — first call returns filters, second call returns answer
+        mock_choice_filters = MagicMock()
+        mock_choice_filters.message.content = '{"subject": "Biology", "grade": "Class 10"}'
+
+        mock_choice_answer = MagicMock()
+        mock_choice_answer.message.content = "Cells are the basic unit of life."
+
+        mock_groq.return_value.chat.completions.create.side_effect = [
+            MagicMock(choices=[mock_choice_filters]),
+            MagicMock(choices=[mock_choice_answer])
+        ]
+
+        rag = SelfQueryRAG()
+        query = RAGQuery(query_text="Class 10 Biology chapters about cells", top_k=1)
+        result = rag.run(query)
+
+        assert isinstance(result, RAGResult)
+        assert result.rag_type == "self_query"
+        assert len(result.answer) > 0
+
+    @patch("backend.modules.rag.self_query_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.self_query_rag.Groq")
+    def test_self_query_extracts_filters(self, mock_groq, mock_chroma):
+        """_extract_filters() must return correct filters from query."""
+
+        # Mock Groq to return filters JSON
+        mock_choice = MagicMock()
+        mock_choice.message.content = '{"subject": "Physics", "difficulty": "hard"}'
+        mock_groq.return_value.chat.completions.create.return_value = MagicMock(
+            choices=[mock_choice]
+        )
+
+        rag = SelfQueryRAG()
+        filters = rag._extract_filters("Hard Physics problems about Newton")
+
+        assert filters.get("subject") == "Physics"
+        assert filters.get("difficulty") == "hard"
+
+    @patch("backend.modules.rag.self_query_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.self_query_rag.Groq")
+    def test_self_query_fallback_on_no_filters(self, mock_groq, mock_chroma):
+        """SelfQueryRAG must fall back to plain search when no filters found."""
+
+        # Mock ChromaDB
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {
+            "documents": [["Photosynthesis converts sunlight into energy."]]
+        }
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+
+        # Mock Groq — first call returns empty filters, second returns answer
+        mock_choice_filters = MagicMock()
+        mock_choice_filters.message.content = '{}'
+
+        mock_choice_answer = MagicMock()
+        mock_choice_answer.message.content = "Photosynthesis is the process of converting light."
+
+        mock_groq.return_value.chat.completions.create.side_effect = [
+            MagicMock(choices=[mock_choice_filters]),
+            MagicMock(choices=[mock_choice_answer])
+        ]
+
+        rag = SelfQueryRAG()
+        query = RAGQuery(query_text="What is photosynthesis?", top_k=1)
+        result = rag.run(query)
+
+        # Must still return a valid result even with no filters
+        assert isinstance(result, RAGResult)
+        assert result.rag_type == "self_query"
+        assert len(result.answer) > 0

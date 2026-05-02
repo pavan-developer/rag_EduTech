@@ -9,6 +9,7 @@ from .base_rag import BaseRAG, RAGQuery, RAGResult
 from .naive_rag import NaiveRAG
 from .hybrid_rag import HybridRAG
 from .contextual_rag import ContextualRAG
+from .self_query_rag import SelfQueryRAG
 
 __all__ = [
     "BaseRAG",
@@ -17,4 +18,5 @@ __all__ = [
     "NaiveRAG",
     "HybridRAG",
     "ContextualRAG",
+    "SelfQueryRAG",
 ]
