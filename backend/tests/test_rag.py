@@ -8,7 +8,7 @@
 
 import pytest
 from unittest.mock import MagicMock, patch
-from backend.modules.rag import NaiveRAG, HybridRAG, ContextualRAG, SelfQueryRAG, ParentDocumentRAG, EnsembleRAG, AdaptiveRAG, GraphRAG, MultiQueryRAG, StepBackRAG, RAGQuery, RAGResult
+from backend.modules.rag import NaiveRAG, HybridRAG, ContextualRAG, SelfQueryRAG, ParentDocumentRAG, EnsembleRAG, AdaptiveRAG, GraphRAG, MultiQueryRAG, StepBackRAG, RaptorRAG, RAGQuery, RAGResult
 
 class TestNaiveRAG:
     """Tests for NaiveRAG pipeline."""
@@ -1092,3 +1092,108 @@ class TestStepBackRAG:
         # Must still return valid result
         assert isinstance(result, RAGResult)
         assert result.rag_type == "step_back"
+    
+
+
+#===============================================================
+
+
+
+
+class TestRaptorRAG:
+    """Tests for RaptorRAG pipeline."""
+
+    @patch("backend.modules.rag.raptor_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.raptor_rag.Groq")
+    def test_raptor_rag_returns_rag_result(self, mock_groq, mock_chroma):
+        """RaptorRAG.run() must return a RAGResult object."""
+
+        # Mock ChromaDB with seed chunks
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {
+            "documents": [[
+                "Newton discovered laws of motion.",
+                "Force equals mass times acceleration.",
+                "Objects in motion stay in motion.",
+            ]]
+        }
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+
+        # Mock Groq — first calls are summaries, last call is answer
+        mock_summary = MagicMock()
+        mock_summary.message.content = "Newton's mechanics covers force, motion and acceleration."
+
+        mock_answer = MagicMock()
+        mock_answer.message.content = "Newton's laws describe force and motion relationships."
+
+        mock_groq.return_value.chat.completions.create.side_effect = [
+            MagicMock(choices=[mock_summary]),  # Level 1 summary
+            MagicMock(choices=[mock_summary]),  # Level 2 summary
+            MagicMock(choices=[mock_answer]),   # Final answer
+        ]
+
+        rag = RaptorRAG(tree_depth=2, group_size=3)
+        query = RAGQuery(query_text="What are Newton's laws?", top_k=5)
+        result = rag.run(query)
+
+        assert isinstance(result, RAGResult)
+        assert result.rag_type == "raptor"
+        assert len(result.answer) > 0
+
+    @patch("backend.modules.rag.raptor_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.raptor_rag.Groq")
+    def test_raptor_builds_tree_levels(self, mock_groq, mock_chroma):
+        """_build_tree() must create correct number of levels."""
+
+        # Mock Groq summary
+        mock_summary = MagicMock()
+        mock_summary.message.content = "Summary of Newton mechanics."
+        mock_groq.return_value.chat.completions.create.return_value = MagicMock(
+            choices=[mock_summary]
+        )
+
+        rag = RaptorRAG(tree_depth=2, group_size=3)
+
+        # Build tree from 6 chunks
+        chunks = [
+            "chunk_1", "chunk_2", "chunk_3",
+            "chunk_4", "chunk_5", "chunk_6"
+        ]
+        tree = rag._build_tree(chunks)
+
+        # Tree must have Level 0 (raw) + at least Level 1 (summaries)
+        assert 0 in tree
+        assert len(tree[0]) == 6
+        assert 1 in tree
+        assert len(tree[1]) > 0
+
+    @patch("backend.modules.rag.raptor_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.raptor_rag.Groq")
+    def test_raptor_includes_all_levels_in_chunks(self, mock_groq, mock_chroma):
+        """retrieve() must include chunks from all tree levels."""
+
+        # Mock ChromaDB
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {
+            "documents": [[
+                "Raw chunk about photosynthesis.",
+                "Raw chunk about chlorophyll.",
+                "Raw chunk about sunlight energy.",
+            ]]
+        }
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+
+        # Mock Groq summary
+        mock_summary = MagicMock()
+        mock_summary.message.content = "Photosynthesis summary covering all aspects."
+        mock_groq.return_value.chat.completions.create.return_value = MagicMock(
+            choices=[mock_summary]
+        )
+
+        rag = RaptorRAG(tree_depth=1, group_size=3)
+        query = RAGQuery(query_text="How does photosynthesis work?", top_k=10)
+        chunks = rag.retrieve(query)
+
+        # Must contain both raw chunks AND summary
+        assert "Raw chunk about photosynthesis." in chunks
+        assert "Photosynthesis summary covering all aspects." in chunks
