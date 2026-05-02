@@ -14,6 +14,7 @@ from .parent_document_rag import ParentDocumentRAG
 from .ensemble_rag import EnsembleRAG
 from .adaptive_rag import AdaptiveRAG
 from .graph_rag import GraphRAG
+from .multi_query_rag import MultiQueryRAG
 
 __all__ = [
     "BaseRAG",
@@ -27,4 +28,5 @@ __all__ = [
     "EnsembleRAG",
     "AdaptiveRAG",
     "GraphRAG",
+    "MultiQueryRAG",
 ]

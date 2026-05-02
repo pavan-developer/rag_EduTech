@@ -8,7 +8,7 @@
 
 import pytest
 from unittest.mock import MagicMock, patch
-from backend.modules.rag import NaiveRAG, HybridRAG, ContextualRAG, SelfQueryRAG, ParentDocumentRAG, EnsembleRAG, AdaptiveRAG, GraphRAG, RAGQuery, RAGResult
+from backend.modules.rag import NaiveRAG, HybridRAG, ContextualRAG, SelfQueryRAG, ParentDocumentRAG, EnsembleRAG, AdaptiveRAG, GraphRAG, MultiQueryRAG, RAGQuery, RAGResult
 
 class TestNaiveRAG:
     """Tests for NaiveRAG pipeline."""
@@ -878,3 +878,112 @@ class TestGraphRAG:
         assert isinstance(result, RAGResult)
         assert result.rag_type == "graph"
         assert result.source_chunks == []
+
+
+
+
+
+#=============================================
+
+
+
+class TestMultiQueryRAG:
+    """Tests for MultiQueryRAG pipeline."""
+
+    @patch("backend.modules.rag.multi_query_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.multi_query_rag.Groq")
+    def test_multi_query_rag_returns_rag_result(self, mock_groq, mock_chroma):
+        """MultiQueryRAG.run() must return a RAGResult object."""
+
+        # Mock ChromaDB
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {
+            "documents": [["Photosynthesis converts sunlight into glucose."]]
+        }
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+
+        # Mock Groq — first call generates queries, second call generates answer
+        mock_queries = MagicMock()
+        mock_queries.message.content = (
+            "What is the process of photosynthesis?\n"
+            "How do plants convert sunlight to energy?\n"
+            "What happens inside chloroplasts?"
+        )
+
+        mock_answer = MagicMock()
+        mock_answer.message.content = "Photosynthesis converts sunlight into glucose."
+
+        mock_groq.return_value.chat.completions.create.side_effect = [
+            MagicMock(choices=[mock_queries]),
+            MagicMock(choices=[mock_answer]),
+        ]
+
+        rag = MultiQueryRAG()
+        query = RAGQuery(query_text="How do plants make food?", top_k=3)
+        result = rag.run(query)
+
+        assert isinstance(result, RAGResult)
+        assert result.rag_type == "multi_query"
+        assert len(result.answer) > 0
+
+    @patch("backend.modules.rag.multi_query_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.multi_query_rag.Groq")
+    def test_multi_query_produces_unique_chunks(self, mock_groq, mock_chroma):
+        """MultiQueryRAG must deduplicate chunks from multiple queries."""
+
+        # Mock ChromaDB — returns different chunks per query call
+        mock_collection = MagicMock()
+        mock_collection.query.side_effect = [
+            {"documents": [["chunk_A", "chunk_B"]]},  # query 1
+            {"documents": [["chunk_B", "chunk_C"]]},  # query 2
+            {"documents": [["chunk_C", "chunk_D"]]},  # query 3
+            {"documents": [["chunk_D", "chunk_E"]]},  # query 4
+        ]
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+
+        # Mock Groq query generation
+        mock_queries = MagicMock()
+        mock_queries.message.content = (
+            "What is photosynthesis?\n"
+            "How do plants use sunlight?\n"
+            "What is chlorophyll used for?"
+        )
+        mock_groq.return_value.chat.completions.create.return_value = MagicMock(
+            choices=[mock_queries]
+        )
+
+        rag = MultiQueryRAG()
+        query = RAGQuery(query_text="How do plants make food?", top_k=10)
+        chunks = rag.retrieve(query)
+
+        # No duplicates in results
+        assert len(chunks) == len(set(chunks))
+
+    @patch("backend.modules.rag.multi_query_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.multi_query_rag.Groq")
+    def test_multi_query_fallback_on_generation_failure(self, mock_groq, mock_chroma):
+        """MultiQueryRAG must fall back to original query if generation fails."""
+
+        # Mock ChromaDB
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {
+            "documents": [["Fallback chunk from original query."]]
+        }
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+
+        # Mock Groq — first call fails, second call returns answer
+        mock_answer = MagicMock()
+        mock_answer.message.content = "Fallback answer."
+
+        mock_groq.return_value.chat.completions.create.side_effect = [
+            Exception("Groq API down"),          # query generation fails
+            MagicMock(choices=[mock_answer]),     # answer generation succeeds
+        ]
+
+        rag = MultiQueryRAG()
+        query = RAGQuery(query_text="What is gravity?", top_k=1)
+        result = rag.run(query)
+
+        # Must still return valid result using original query only
+        assert isinstance(result, RAGResult)
+        assert result.rag_type == "multi_query"
