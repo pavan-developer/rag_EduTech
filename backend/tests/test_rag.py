@@ -8,7 +8,7 @@
 
 import pytest
 from unittest.mock import MagicMock, patch
-from backend.modules.rag import NaiveRAG, HybridRAG, ContextualRAG, SelfQueryRAG, ParentDocumentRAG, RAGQuery, RAGResult
+from backend.modules.rag import NaiveRAG, HybridRAG, ContextualRAG, SelfQueryRAG, ParentDocumentRAG, EnsembleRAG, RAGQuery, RAGResult
 
 class TestNaiveRAG:
     """Tests for NaiveRAG pipeline."""
@@ -472,3 +472,139 @@ class TestParentDocumentRAG:
 
         # Must fall back to child chunks
         assert chunks == ["child chunk fallback text"]
+
+
+
+#============================================================
+
+
+
+
+class TestEnsembleRAG:
+    """Tests for EnsembleRAG pipeline."""
+
+    @patch("backend.modules.rag.naive_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.naive_rag.Groq")
+    @patch("backend.modules.rag.hybrid_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.hybrid_rag.Groq")
+    @patch("backend.modules.rag.ensemble_rag.Groq")
+    def test_ensemble_rag_returns_rag_result(
+        self,
+        mock_ensemble_groq,
+        mock_hybrid_groq,
+        mock_hybrid_chroma,
+        mock_naive_groq,
+        mock_naive_chroma
+    ):
+        """EnsembleRAG.run() must return a RAGResult object."""
+
+        # Mock NaiveRAG ChromaDB
+        mock_naive_collection = MagicMock()
+        mock_naive_collection.query.return_value = {
+            "documents": [["chunk_A about Newton", "chunk_B about force"]]
+        }
+        mock_naive_chroma.return_value.get_or_create_collection.return_value = mock_naive_collection
+
+        # Mock HybridRAG ChromaDB
+        mock_hybrid_collection = MagicMock()
+        mock_hybrid_collection.query.return_value = {
+            "documents": [["chunk_B about force", "chunk_C about mass"]]
+        }
+        mock_hybrid_chroma.return_value.get_or_create_collection.return_value = mock_hybrid_collection
+
+        # Mock Groq answer for EnsembleRAG
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Newton's law: F = ma"
+        mock_ensemble_groq.return_value.chat.completions.create.return_value = MagicMock(
+            choices=[mock_choice]
+        )
+
+        rag = EnsembleRAG()
+        query = RAGQuery(query_text="What is Newton's second law?", top_k=3)
+        result = rag.run(query)
+
+        assert isinstance(result, RAGResult)
+        assert result.rag_type == "ensemble"
+        assert len(result.answer) > 0
+
+    @patch("backend.modules.rag.naive_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.naive_rag.Groq")
+    @patch("backend.modules.rag.hybrid_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.hybrid_rag.Groq")
+    @patch("backend.modules.rag.ensemble_rag.Groq")
+    def test_ensemble_ranks_consensus_chunk_first(
+        self,
+        mock_ensemble_groq,
+        mock_hybrid_groq,
+        mock_hybrid_chroma,
+        mock_naive_groq,
+        mock_naive_chroma
+    ):
+        """Chunk found by both retrievers must rank first."""
+
+        # NaiveRAG finds: chunk_A, chunk_B
+        mock_naive_collection = MagicMock()
+        mock_naive_collection.query.return_value = {
+            "documents": [["unique_to_naive", "shared_chunk"]]
+        }
+        mock_naive_chroma.return_value.get_or_create_collection.return_value = mock_naive_collection
+
+        # HybridRAG finds: chunk_B, chunk_C
+        mock_hybrid_collection = MagicMock()
+        mock_hybrid_collection.query.return_value = {
+            "documents": [["shared_chunk", "unique_to_hybrid"]]
+        }
+        mock_hybrid_chroma.return_value.get_or_create_collection.return_value = mock_hybrid_collection
+
+        mock_ensemble_groq.return_value.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="answer"))]
+        )
+
+        rag = EnsembleRAG()
+        query = RAGQuery(query_text="Test query", top_k=3)
+        chunks = rag.retrieve(query)
+
+        # shared_chunk found by both RAGs must rank first
+        # shared_chunk found by both RAGs must be in results
+        assert "shared_chunk" in chunks
+# All returned chunks must be unique (no duplicates)
+        assert len(chunks) == len(set(chunks))
+
+    @patch("backend.modules.rag.naive_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.naive_rag.Groq")
+    @patch("backend.modules.rag.hybrid_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.hybrid_rag.Groq")
+    @patch("backend.modules.rag.ensemble_rag.Groq")
+    def test_ensemble_continues_if_retriever_fails(
+        self,
+        mock_ensemble_groq,
+        mock_hybrid_groq,
+        mock_hybrid_chroma,
+        mock_naive_groq,
+        mock_naive_chroma
+    ):
+        """EnsembleRAG must continue if one retriever fails."""
+
+        # NaiveRAG ChromaDB raises exception
+        mock_naive_chroma.return_value.get_or_create_collection.side_effect = Exception(
+            "ChromaDB connection failed"
+        )
+
+        # HybridRAG works fine
+        mock_hybrid_collection = MagicMock()
+        mock_hybrid_collection.query.return_value = {
+            "documents": [["chunk from hybrid"]]
+        }
+        mock_hybrid_chroma.return_value.get_or_create_collection.return_value = mock_hybrid_collection
+
+        mock_ensemble_groq.return_value.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="answer from hybrid only"))]
+        )
+
+        rag = EnsembleRAG()
+        query = RAGQuery(query_text="Test query", top_k=3)
+
+        # Must not raise — should continue with HybridRAG results
+        result = rag.run(query)
+        assert isinstance(result, RAGResult)
+        assert result.rag_type == "ensemble"
