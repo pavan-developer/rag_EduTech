@@ -8,7 +8,7 @@
 
 import pytest
 from unittest.mock import MagicMock, patch
-from backend.modules.rag import NaiveRAG, HybridRAG, ContextualRAG, SelfQueryRAG, ParentDocumentRAG, EnsembleRAG, RAGQuery, RAGResult
+from backend.modules.rag import NaiveRAG, HybridRAG, ContextualRAG, SelfQueryRAG, ParentDocumentRAG, EnsembleRAG, AdaptiveRAG, RAGQuery, RAGResult
 
 class TestNaiveRAG:
     """Tests for NaiveRAG pipeline."""
@@ -608,3 +608,179 @@ class TestEnsembleRAG:
         result = rag.run(query)
         assert isinstance(result, RAGResult)
         assert result.rag_type == "ensemble"
+
+
+#============================================================
+
+
+class TestAdaptiveRAG:
+    """Tests for AdaptiveRAG pipeline."""
+
+    @patch("backend.modules.rag.naive_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.naive_rag.Groq")
+    @patch("backend.modules.rag.hybrid_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.hybrid_rag.Groq")
+    @patch("backend.modules.rag.contextual_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.contextual_rag.Groq")
+    @patch("backend.modules.rag.self_query_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.self_query_rag.Groq")
+    @patch("backend.modules.rag.ensemble_rag.Groq")
+    @patch("backend.modules.rag.adaptive_rag.Groq")
+    def test_adaptive_rag_returns_rag_result(
+        self,
+        mock_adaptive_groq,
+        mock_ensemble_groq,
+        mock_self_query_groq,
+        mock_self_query_chroma,
+        mock_contextual_groq,
+        mock_contextual_chroma,
+        mock_hybrid_groq,
+        mock_hybrid_chroma,
+        mock_naive_groq,
+        mock_naive_chroma,
+    ):
+        """AdaptiveRAG.run() must return a RAGResult object."""
+
+        # Mock ChromaDB for NaiveRAG
+        mock_naive_collection = MagicMock()
+        mock_naive_collection.query.return_value = {
+            "documents": [["Photosynthesis converts sunlight into energy."]]
+        }
+        mock_naive_chroma.return_value.get_or_create_collection.return_value = (
+            mock_naive_collection
+        )
+
+        # Mock Groq — first call classifies query, second call generates answer
+        mock_classify = MagicMock()
+        mock_classify.message.content = "simple"
+
+        mock_answer = MagicMock()
+        mock_answer.message.content = "Photosynthesis is the process of converting light."
+
+       # Adaptive Groq handles classification only
+        mock_adaptive_groq.return_value.chat.completions.create.side_effect = [
+            MagicMock(choices=[mock_classify]),
+ ]
+
+# NaiveRAG Groq handles the actual answer generation
+        mock_naive_groq.return_value.chat.completions.create.return_value = MagicMock(
+        choices=[mock_answer]
+)
+
+        rag = AdaptiveRAG()
+        query = RAGQuery(query_text="What is photosynthesis?", top_k=1)
+        result = rag.run(query)
+
+        assert isinstance(result, RAGResult)
+        assert result.rag_type == "adaptive"
+        assert len(result.answer) > 0
+        assert "routed_to" in result.metadata
+
+    @patch("backend.modules.rag.naive_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.naive_rag.Groq")
+    @patch("backend.modules.rag.hybrid_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.hybrid_rag.Groq")
+    @patch("backend.modules.rag.contextual_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.contextual_rag.Groq")
+    @patch("backend.modules.rag.self_query_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.self_query_rag.Groq")
+    @patch("backend.modules.rag.ensemble_rag.Groq")
+    @patch("backend.modules.rag.adaptive_rag.Groq")
+    def test_adaptive_routes_to_correct_rag(
+        self,
+        mock_adaptive_groq,
+        mock_ensemble_groq,
+        mock_self_query_groq,
+        mock_self_query_chroma,
+        mock_contextual_groq,
+        mock_contextual_chroma,
+        mock_hybrid_groq,
+        mock_hybrid_chroma,
+        mock_naive_groq,
+        mock_naive_chroma,
+    ):
+        """AdaptiveRAG must route filtered query to SelfQueryRAG."""
+
+        # Mock ChromaDB for SelfQueryRAG
+        mock_self_query_collection = MagicMock()
+        mock_self_query_collection.query.return_value = {
+            "documents": [["Biology Class 10 cells chapter."]]
+        }
+        mock_self_query_chroma.return_value.get_or_create_collection.return_value = (
+            mock_self_query_collection
+        )
+
+        # Mock Groq — classify returns "filtered", then filter extraction, then answer
+        mock_classify = MagicMock()
+        mock_classify.message.content = "filtered"
+
+        mock_filters = MagicMock()
+        mock_filters.message.content = '{"subject": "Biology", "grade": "Class 10"}'
+
+        mock_answer = MagicMock()
+        mock_answer.message.content = "Cells are the basic unit of life."
+
+        mock_adaptive_groq.return_value.chat.completions.create.side_effect = [
+            MagicMock(choices=[mock_classify]),
+        ]
+        mock_self_query_groq.return_value.chat.completions.create.side_effect = [
+            MagicMock(choices=[mock_filters]),
+            MagicMock(choices=[mock_answer]),
+        ]
+
+        rag = AdaptiveRAG()
+        query = RAGQuery(
+            query_text="Class 10 Biology chapters about cells", top_k=1
+        )
+        result = rag.run(query)
+
+        assert isinstance(result, RAGResult)
+        assert result.metadata["routed_to"] == "filtered"
+
+    @patch("backend.modules.rag.naive_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.naive_rag.Groq")
+    @patch("backend.modules.rag.hybrid_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.hybrid_rag.Groq")
+    @patch("backend.modules.rag.contextual_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.contextual_rag.Groq")
+    @patch("backend.modules.rag.self_query_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.self_query_rag.Groq")
+    @patch("backend.modules.rag.ensemble_rag.Groq")
+    @patch("backend.modules.rag.adaptive_rag.Groq")
+    def test_adaptive_defaults_to_naive_on_failure(
+        self,
+        mock_adaptive_groq,
+        mock_ensemble_groq,
+        mock_self_query_groq,
+        mock_self_query_chroma,
+        mock_contextual_groq,
+        mock_contextual_chroma,
+        mock_hybrid_groq,
+        mock_hybrid_chroma,
+        mock_naive_groq,
+        mock_naive_chroma,
+    ):
+        """AdaptiveRAG must default to NaiveRAG when classification fails."""
+
+        # Mock ChromaDB for NaiveRAG
+        mock_naive_collection = MagicMock()
+        mock_naive_collection.query.return_value = {
+            "documents": [["Fallback answer from naive."]]
+        }
+        mock_naive_chroma.return_value.get_or_create_collection.return_value = (
+            mock_naive_collection
+        )
+
+        # Mock Groq — classification raises exception
+        mock_adaptive_groq.return_value.chat.completions.create.side_effect = [
+            Exception("Groq API down"),
+            MagicMock(choices=[MagicMock(message=MagicMock(content="fallback answer"))]),
+        ]
+
+        rag = AdaptiveRAG()
+        query = RAGQuery(query_text="What is gravity?", top_k=1)
+        result = rag.run(query)
+
+        # Must still return result — defaulted to NaiveRAG
+        assert isinstance(result, RAGResult)
+        assert result.metadata["routed_to"] == "simple"
