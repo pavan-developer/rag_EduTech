@@ -8,8 +8,7 @@
 
 import pytest
 from unittest.mock import MagicMock, patch
-from backend.modules.rag import NaiveRAG, RAGQuery, RAGResult
-
+from backend.modules.rag import NaiveRAG, HybridRAG, RAGQuery, RAGResult
 
 class TestNaiveRAG:
     """Tests for NaiveRAG pipeline."""
@@ -75,3 +74,96 @@ class TestNaiveRAG:
         """RAGQuery default top_k must be 5."""
         query = RAGQuery(query_text="Test question")
         assert query.top_k == 5
+
+#==============================================================
+
+class TestHybridRAG:
+    """Tests for HybridRAG pipeline."""
+
+    @patch("backend.modules.rag.hybrid_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.hybrid_rag.Groq")
+    def test_hybrid_rag_returns_rag_result(self, mock_groq, mock_chroma):
+        """HybridRAG.run() must return a RAGResult object."""
+
+        # Mock ChromaDB response
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {
+            "documents": [[
+                "Newton's second law states Force equals mass times acceleration.",
+                "F=ma is the formula for Newton's second law.",
+                "Mass and acceleration determine the net force on an object."
+            ]]
+        }
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+
+        # Mock Groq response
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Newton's second law: F = ma."
+        mock_groq.return_value.chat.completions.create.return_value = MagicMock(
+            choices=[mock_choice]
+        )
+
+        # Run the pipeline
+        rag = HybridRAG()
+        query = RAGQuery(query_text="What is Newton's second law?", top_k=3)
+        result = rag.run(query)
+
+        # Assertions
+        assert isinstance(result, RAGResult)
+        assert result.rag_type == "hybrid"
+        assert len(result.answer) > 0
+        assert len(result.source_chunks) > 0
+
+    @patch("backend.modules.rag.hybrid_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.hybrid_rag.Groq")
+    def test_hybrid_rag_handles_empty_chunks(self, mock_groq, mock_chroma):
+        """HybridRAG must handle empty ChromaDB results gracefully."""
+
+        # Mock empty ChromaDB response
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {"documents": [[]]}
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+
+        # Mock Groq response
+        mock_choice = MagicMock()
+        mock_choice.message.content = "I don't have enough information."
+        mock_groq.return_value.chat.completions.create.return_value = MagicMock(
+            choices=[mock_choice]
+        )
+
+        rag = HybridRAG()
+        query = RAGQuery(query_text="Unknown topic", top_k=5)
+        result = rag.run(query)
+
+        assert isinstance(result, RAGResult)
+        assert result.rag_type == "hybrid"
+        assert result.source_chunks == []
+
+    @patch("backend.modules.rag.hybrid_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.hybrid_rag.Groq")
+    def test_hybrid_rag_deduplicates_chunks(self, mock_groq, mock_chroma):
+        """HybridRAG must not return duplicate chunks."""
+
+        # Mock ChromaDB with duplicate-prone chunks
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {
+            "documents": [[
+                "Force equals mass times acceleration.",
+                "Force equals mass times acceleration.",
+                "Newton discovered this law in 1687."
+            ]]
+        }
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+
+        mock_choice = MagicMock()
+        mock_choice.message.content = "F = ma"
+        mock_groq.return_value.chat.completions.create.return_value = MagicMock(
+            choices=[mock_choice]
+        )
+
+        rag = HybridRAG()
+        query = RAGQuery(query_text="Newton's law formula", top_k=3)
+        result = rag.run(query)
+
+        # No duplicates in source chunks
+        assert len(result.source_chunks) == len(set(result.source_chunks))

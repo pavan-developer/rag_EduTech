@@ -7,10 +7,12 @@
 
 from .base_rag import BaseRAG, RAGQuery, RAGResult
 from .naive_rag import NaiveRAG
+from .hybrid_rag import HybridRAG
 
 __all__ = [
     "BaseRAG",
     "RAGQuery",
     "RAGResult",
     "NaiveRAG",
+    "HybridRAG",
 ]
