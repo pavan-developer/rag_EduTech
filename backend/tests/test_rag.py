@@ -8,7 +8,7 @@
 
 import pytest
 from unittest.mock import MagicMock, patch
-from backend.modules.rag import NaiveRAG, HybridRAG, ContextualRAG, SelfQueryRAG, ParentDocumentRAG, EnsembleRAG, AdaptiveRAG, RAGQuery, RAGResult
+from backend.modules.rag import NaiveRAG, HybridRAG, ContextualRAG, SelfQueryRAG, ParentDocumentRAG, EnsembleRAG, AdaptiveRAG, GraphRAG, RAGQuery, RAGResult
 
 class TestNaiveRAG:
     """Tests for NaiveRAG pipeline."""
@@ -784,3 +784,97 @@ class TestAdaptiveRAG:
         # Must still return result — defaulted to NaiveRAG
         assert isinstance(result, RAGResult)
         assert result.metadata["routed_to"] == "simple"
+
+
+
+
+
+#================================================================
+
+
+
+
+
+class TestGraphRAG:
+    """Tests for GraphRAG pipeline."""
+
+    @patch("backend.modules.rag.graph_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.graph_rag.Groq")
+    def test_graph_rag_returns_rag_result(self, mock_groq, mock_chroma):
+        """GraphRAG.run() must return a RAGResult object."""
+
+        # Mock ChromaDB with related chunks
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {
+            "documents": [[
+                "Newton discovered the laws of motion in 1687.",
+                "Force equals mass times acceleration.",
+                "Motion is caused by unbalanced forces acting on objects."
+            ]]
+        }
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+
+        # Mock Groq answer
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Newton's laws describe the relationship between force and motion."
+        mock_groq.return_value.chat.completions.create.return_value = MagicMock(
+            choices=[mock_choice]
+        )
+
+        rag = GraphRAG()
+        query = RAGQuery(query_text="What are Newton's laws?", top_k=3)
+        result = rag.run(query)
+
+        assert isinstance(result, RAGResult)
+        assert result.rag_type == "graph"
+        assert len(result.answer) > 0
+
+    @patch("backend.modules.rag.graph_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.graph_rag.Groq")
+    def test_graph_expands_related_chunks(self, mock_groq, mock_chroma):
+        """GraphRAG must expand seed chunks via concept graph traversal."""
+
+        # Two related chunks sharing concepts
+        chunk_a = "photosynthesis occurs inside chloroplasts using sunlight"
+        chunk_b = "chloroplasts contain chlorophyll which absorbs sunlight energy"
+
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {
+            "documents": [[chunk_a, chunk_b]]
+        }
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+
+        mock_groq.return_value.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="answer"))]
+        )
+
+        rag = GraphRAG()
+        query = RAGQuery(query_text="How does photosynthesis work?", top_k=5)
+        chunks = rag.retrieve(query)
+
+        # Both chunks must be in results — graph connects them via shared concepts
+        assert chunk_a in chunks
+        assert chunk_b in chunks
+
+    @patch("backend.modules.rag.graph_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.graph_rag.Groq")
+    def test_graph_rag_handles_empty_chunks(self, mock_groq, mock_chroma):
+        """GraphRAG must handle empty ChromaDB results gracefully."""
+
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {"documents": [[]]}
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+
+        mock_choice = MagicMock()
+        mock_choice.message.content = "I don't have enough information."
+        mock_groq.return_value.chat.completions.create.return_value = MagicMock(
+            choices=[mock_choice]
+        )
+
+        rag = GraphRAG()
+        query = RAGQuery(query_text="Unknown topic", top_k=3)
+        result = rag.run(query)
+
+        assert isinstance(result, RAGResult)
+        assert result.rag_type == "graph"
+        assert result.source_chunks == []
