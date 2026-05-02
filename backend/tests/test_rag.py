@@ -8,7 +8,7 @@
 
 import pytest
 from unittest.mock import MagicMock, patch
-from backend.modules.rag import NaiveRAG, HybridRAG, ContextualRAG, SelfQueryRAG, ParentDocumentRAG, EnsembleRAG, AdaptiveRAG, GraphRAG, MultiQueryRAG, RAGQuery, RAGResult
+from backend.modules.rag import NaiveRAG, HybridRAG, ContextualRAG, SelfQueryRAG, ParentDocumentRAG, EnsembleRAG, AdaptiveRAG, GraphRAG, MultiQueryRAG, StepBackRAG, RAGQuery, RAGResult
 
 class TestNaiveRAG:
     """Tests for NaiveRAG pipeline."""
@@ -987,3 +987,108 @@ class TestMultiQueryRAG:
         # Must still return valid result using original query only
         assert isinstance(result, RAGResult)
         assert result.rag_type == "multi_query"
+
+
+
+
+#=============================================================
+
+
+
+class TestStepBackRAG:
+    """Tests for StepBackRAG pipeline."""
+
+    @patch("backend.modules.rag.step_back_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.step_back_rag.Groq")
+    def test_step_back_rag_returns_rag_result(self, mock_groq, mock_chroma):
+        """StepBackRAG.run() must return a RAGResult object."""
+
+        # Mock ChromaDB
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {
+            "documents": [["Electromagnetic spectrum covers all wavelengths."]]
+        }
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+
+        # Mock Groq — first call generates step-back, second call answers
+        mock_stepback = MagicMock()
+        mock_stepback.message.content = "What is the electromagnetic spectrum?"
+
+        mock_answer = MagicMock()
+        mock_answer.message.content = "Red light has a wavelength of 620-750nm."
+
+        mock_groq.return_value.chat.completions.create.side_effect = [
+            MagicMock(choices=[mock_stepback]),
+            MagicMock(choices=[mock_answer]),
+        ]
+
+        rag = StepBackRAG()
+        query = RAGQuery(
+            query_text="What is the wavelength of red light?", top_k=2
+        )
+        result = rag.run(query)
+
+        assert isinstance(result, RAGResult)
+        assert result.rag_type == "step_back"
+        assert len(result.answer) > 0
+
+    @patch("backend.modules.rag.step_back_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.step_back_rag.Groq")
+    def test_step_back_combines_specific_and_general(self, mock_groq, mock_chroma):
+        """retrieve() must combine specific and general chunks."""
+
+        # Mock ChromaDB — returns different chunks per call
+        mock_collection = MagicMock()
+        mock_collection.query.side_effect = [
+            {"documents": [["specific chunk about red light wavelength"]]},
+            {"documents": [["general chunk about electromagnetic spectrum"]]},
+        ]
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+
+        # Mock Groq step-back generation
+        mock_stepback = MagicMock()
+        mock_stepback.message.content = "What is the electromagnetic spectrum?"
+        mock_groq.return_value.chat.completions.create.return_value = MagicMock(
+            choices=[mock_stepback]
+        )
+
+        rag = StepBackRAG()
+        query = RAGQuery(
+            query_text="What is the wavelength of red light?", top_k=5
+        )
+        chunks = rag.retrieve(query)
+
+        # Both specific and general chunks must be present
+        assert "specific chunk about red light wavelength" in chunks
+        assert "general chunk about electromagnetic spectrum" in chunks
+
+    @patch("backend.modules.rag.step_back_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.step_back_rag.Groq")
+    def test_step_back_fallback_on_failure(self, mock_groq, mock_chroma):
+        """StepBackRAG must fall back to original query if step-back fails."""
+
+        # Mock ChromaDB
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {
+            "documents": [["Fallback chunk from original query."]]
+        }
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+
+        # Mock Groq — step-back generation fails, answer succeeds
+        mock_answer = MagicMock()
+        mock_answer.message.content = "Fallback answer."
+
+        mock_groq.return_value.chat.completions.create.side_effect = [
+            Exception("Groq API down"),
+            MagicMock(choices=[mock_answer]),
+        ]
+
+        rag = StepBackRAG()
+        query = RAGQuery(
+            query_text="What is the wavelength of red light?", top_k=1
+        )
+        result = rag.run(query)
+
+        # Must still return valid result
+        assert isinstance(result, RAGResult)
+        assert result.rag_type == "step_back"
