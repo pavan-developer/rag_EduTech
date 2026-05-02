@@ -8,7 +8,7 @@
 
 import pytest
 from unittest.mock import MagicMock, patch
-from backend.modules.rag import NaiveRAG, HybridRAG, ContextualRAG, SelfQueryRAG, RAGQuery, RAGResult
+from backend.modules.rag import NaiveRAG, HybridRAG, ContextualRAG, SelfQueryRAG, ParentDocumentRAG, RAGQuery, RAGResult
 
 class TestNaiveRAG:
     """Tests for NaiveRAG pipeline."""
@@ -351,3 +351,124 @@ class TestSelfQueryRAG:
         assert isinstance(result, RAGResult)
         assert result.rag_type == "self_query"
         assert len(result.answer) > 0
+
+
+
+#==========================================================
+
+
+
+class TestParentDocumentRAG:
+    """Tests for ParentDocumentRAG pipeline."""
+
+    @patch("backend.modules.rag.parent_document_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.parent_document_rag.Groq")
+    def test_parent_document_rag_returns_rag_result(self, mock_groq, mock_chroma):
+        """ParentDocumentRAG.run() must return a RAGResult object."""
+
+        # Mock child collection — small chunks with parent_id in metadata
+        mock_child_collection = MagicMock()
+        mock_child_collection.query.return_value = {
+            "documents": [["Fleming discovered it in 1928."]],
+            "metadatas": [[{"parent_id": "parent_001"}]]
+        }
+
+        # Mock parent collection — large chunks fetched by ID
+        mock_parent_collection = MagicMock()
+        mock_parent_collection.get.return_value = {
+            "documents": [
+                "Penicillin is an antibiotic discovered by Alexander Fleming in 1928. "
+                "It revolutionized modern medicine and saved millions of lives."
+            ]
+        }
+
+        # Return different collections based on call order
+        mock_chroma.return_value.get_or_create_collection.side_effect = [
+            mock_child_collection,
+            mock_parent_collection
+        ]
+
+        # Mock Groq answer
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Penicillin was discovered by Fleming in 1928."
+        mock_groq.return_value.chat.completions.create.return_value = MagicMock(
+            choices=[mock_choice]
+        )
+
+        rag = ParentDocumentRAG()
+        query = RAGQuery(query_text="Who discovered penicillin?", top_k=1)
+        result = rag.run(query)
+
+        assert isinstance(result, RAGResult)
+        assert result.rag_type == "parent_document"
+        assert len(result.answer) > 0
+
+    @patch("backend.modules.rag.parent_document_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.parent_document_rag.Groq")
+    def test_parent_document_returns_parent_chunks(self, mock_groq, mock_chroma):
+        """retrieve() must return parent chunks not child chunks."""
+
+        # Mock child collection
+        mock_child_collection = MagicMock()
+        mock_child_collection.query.return_value = {
+            "documents": [["short child chunk"]],
+            "metadatas": [[{"parent_id": "parent_001"}]]
+        }
+
+        # Mock parent collection — much larger text
+        mock_parent_collection = MagicMock()
+        mock_parent_collection.get.return_value = {
+            "documents": ["This is the full large parent chunk with complete context "
+                         "about the topic including all surrounding information."]
+        }
+
+        mock_chroma.return_value.get_or_create_collection.side_effect = [
+            mock_child_collection,
+            mock_parent_collection
+        ]
+
+        mock_groq.return_value.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="answer"))]
+        )
+
+        rag = ParentDocumentRAG()
+        query = RAGQuery(query_text="Tell me about penicillin", top_k=1)
+        chunks = rag.retrieve(query)
+
+        # Must return parent chunk (longer) not child chunk (shorter)
+        assert chunks[0] != "short child chunk"
+        assert len(chunks[0]) > len("short child chunk")
+
+    @patch("backend.modules.rag.parent_document_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.parent_document_rag.Groq")
+    def test_parent_document_fallback_to_child(self, mock_groq, mock_chroma):
+        """retrieve() must fall back to child chunks when parent not found."""
+
+        # Mock child collection
+        mock_child_collection = MagicMock()
+        mock_child_collection.query.return_value = {
+            "documents": [["child chunk fallback text"]],
+            "metadatas": [[{"parent_id": "parent_001"}]]
+        }
+
+        # Mock parent collection returning empty
+        mock_parent_collection = MagicMock()
+        mock_parent_collection.get.return_value = {
+            "documents": []
+        }
+
+        mock_chroma.return_value.get_or_create_collection.side_effect = [
+            mock_child_collection,
+            mock_parent_collection
+        ]
+
+        mock_groq.return_value.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="fallback answer"))]
+        )
+
+        rag = ParentDocumentRAG()
+        query = RAGQuery(query_text="Test question", top_k=1)
+        chunks = rag.retrieve(query)
+
+        # Must fall back to child chunks
+        assert chunks == ["child chunk fallback text"]

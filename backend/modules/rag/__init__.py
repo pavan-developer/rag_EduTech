@@ -10,6 +10,7 @@ from .naive_rag import NaiveRAG
 from .hybrid_rag import HybridRAG
 from .contextual_rag import ContextualRAG
 from .self_query_rag import SelfQueryRAG
+from .parent_document_rag import ParentDocumentRAG
 
 __all__ = [
     "BaseRAG",
@@ -19,4 +20,5 @@ __all__ = [
     "HybridRAG",
     "ContextualRAG",
     "SelfQueryRAG",
+    "ParentDocumentRAG",
 ]
