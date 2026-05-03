@@ -8,7 +8,7 @@
 
 import pytest
 from unittest.mock import MagicMock, patch
-from backend.modules.rag import NaiveRAG, HybridRAG, ContextualRAG, SelfQueryRAG, ParentDocumentRAG, EnsembleRAG, AdaptiveRAG, GraphRAG, MultiQueryRAG, StepBackRAG, RaptorRAG, CorrectiveRAG, SpeculativeRAG, FusionRAG, RAGQuery, RAGResult
+from backend.modules.rag import NaiveRAG, HybridRAG, ContextualRAG, SelfQueryRAG, ParentDocumentRAG, EnsembleRAG, AdaptiveRAG, GraphRAG, MultiQueryRAG, StepBackRAG, RaptorRAG, CorrectiveRAG, SpeculativeRAG, FusionRAG, SentenceWindowRAG, RAGQuery, RAGResult
 
 class TestNaiveRAG:
     """Tests for NaiveRAG pipeline."""
@@ -1496,6 +1496,87 @@ class TestFusionRAG:
 
 #===============================================================
 
+
+
+
+
+class TestSentenceWindowRAG:
+    """Tests for SentenceWindowRAG pipeline."""
+
+    @patch("backend.modules.rag.sentence_window_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.sentence_window_rag.Groq")
+    def test_sentence_window_rag_returns_rag_result(self, mock_groq, mock_chroma):
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {
+            "documents": [["Chloroplasts contain chlorophyll."]],
+            "metadatas": [[{
+                "full_text": "Plants are autotrophs. Chloroplasts contain chlorophyll. Chlorophyll absorbs sunlight."
+            }]]
+        }
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+
+        mock_answer = MagicMock()
+        mock_answer.message.content = "Chloroplasts contain chlorophyll which absorbs sunlight."
+        mock_groq.return_value.chat.completions.create.return_value = MagicMock(
+            choices=[mock_answer]
+        )
+
+        rag = SentenceWindowRAG(window_size=1)
+        query = RAGQuery(query_text="What do chloroplasts contain?", top_k=1)
+        result = rag.run(query)
+
+        assert isinstance(result, RAGResult)
+        assert result.rag_type == "sentence_window"
+        assert len(result.answer) > 0
+
+    @patch("backend.modules.rag.sentence_window_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.sentence_window_rag.Groq")
+    def test_sentence_window_expands_context(self, mock_groq, mock_chroma):
+        """retrieve() must expand matched sentence to surrounding window."""
+
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {
+            "documents": [["Chloroplasts contain chlorophyll."]],
+            "metadatas": [[{
+                "full_text": "Plants are autotrophs. Chloroplasts contain chlorophyll. Chlorophyll absorbs sunlight."
+            }]]
+        }
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+
+        mock_groq.return_value.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="answer"))]
+        )
+
+        rag = SentenceWindowRAG(window_size=1)
+        query = RAGQuery(query_text="What do chloroplasts contain?", top_k=1)
+        chunks = rag.retrieve(query)
+
+        # Expanded chunk must contain surrounding sentences too
+        assert len(chunks[0]) > len("Chloroplasts contain chlorophyll.")
+        assert "Plants are autotrophs" in chunks[0] or "Chlorophyll absorbs" in chunks[0]
+
+    @patch("backend.modules.rag.sentence_window_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.sentence_window_rag.Groq")
+    def test_sentence_window_handles_no_full_text(self, mock_groq, mock_chroma):
+        """Must return sentence as-is when no full_text in metadata."""
+
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {
+            "documents": [["Chloroplasts contain chlorophyll."]],
+            "metadatas": [[{}]]  # no full_text
+        }
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+
+        mock_groq.return_value.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="answer"))]
+        )
+
+        rag = SentenceWindowRAG(window_size=2)
+        query = RAGQuery(query_text="What do chloroplasts contain?", top_k=1)
+        chunks = rag.retrieve(query)
+
+        # Falls back to sentence as-is
+        assert chunks[0] == "Chloroplasts contain chlorophyll."
 
 
 
