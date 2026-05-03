@@ -21,12 +21,14 @@ from .corrective_rag import CorrectiveRAG
 from .speculative_rag import SpeculativeRAG
 from .fusion_rag import FusionRAG
 from .sentence_window_rag import SentenceWindowRAG
+from .rerank_rag import ReRankRAG
 
 __all__ = [
     "BaseRAG", "RAGQuery", "RAGResult",
     "NaiveRAG", "HybridRAG", "ContextualRAG",
     "SelfQueryRAG", "ParentDocumentRAG", "EnsembleRAG",
     "AdaptiveRAG", "GraphRAG", "MultiQueryRAG",
-    "StepBackRAre", "RaptorRAG", "CorrectiveRAG",
+    "StepBackRAG", "RaptorRAG", "CorrectiveRAG",
     "SpeculativeRAG", "FusionRAG", "SentenceWindowRAG",
+    "ReRankRAG",
 ]

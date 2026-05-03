@@ -8,7 +8,7 @@
 
 import pytest
 from unittest.mock import MagicMock, patch
-from backend.modules.rag import NaiveRAG, HybridRAG, ContextualRAG, SelfQueryRAG, ParentDocumentRAG, EnsembleRAG, AdaptiveRAG, GraphRAG, MultiQueryRAG, StepBackRAG, RaptorRAG, CorrectiveRAG, SpeculativeRAG, FusionRAG, SentenceWindowRAG, RAGQuery, RAGResult
+from backend.modules.rag import NaiveRAG, HybridRAG, ContextualRAG, SelfQueryRAG, ParentDocumentRAG, EnsembleRAG, AdaptiveRAG, GraphRAG, MultiQueryRAG, StepBackRAG, RaptorRAG, CorrectiveRAG, SpeculativeRAG, FusionRAG, SentenceWindowRAG, ReRankRAG, RAGQuery, RAGResult
 
 class TestNaiveRAG:
     """Tests for NaiveRAG pipeline."""
@@ -1580,4 +1580,86 @@ class TestSentenceWindowRAG:
 
 
 
+
+#===============================================================
+
+
+
+
+
+class TestReRankRAG:
+    """Tests for ReRankRAG pipeline."""
+
+    @patch("backend.modules.rag.rerank_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.rerank_rag.Groq")
+    def test_rerank_rag_returns_rag_result(self, mock_groq, mock_chroma):
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {
+            "documents": [["F=ma is Newton's second law.", "Crispy chicken recipe."]]
+        }
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+
+        mock_score_high = MagicMock()
+        mock_score_high.message.content = "9.5"
+
+        mock_score_low = MagicMock()
+        mock_score_low.message.content = "0.5"
+
+        mock_answer = MagicMock()
+        mock_answer.message.content = "Newton's second law is F=ma."
+
+        mock_groq.return_value.chat.completions.create.side_effect = [
+            MagicMock(choices=[mock_score_high]),  # score chunk 1
+            MagicMock(choices=[mock_score_low]),   # score chunk 2
+            MagicMock(choices=[mock_answer]),       # generate answer
+        ]
+
+        rag = ReRankRAG()
+        query = RAGQuery(query_text="What is Newton's second law?", top_k=1)
+        result = rag.run(query)
+
+        assert isinstance(result, RAGResult)
+        assert result.rag_type == "rerank"
+        assert len(result.answer) > 0
+
+    @patch("backend.modules.rag.rerank_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.rerank_rag.Groq")
+    def test_rerank_orders_by_score(self, mock_groq, mock_chroma):
+        """Higher scored chunks must rank first."""
+
+        mock_groq.return_value.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="5.0"))]
+        )
+
+        rag = ReRankRAG()
+
+        # Manually test _rerank with known scores
+        with patch.object(rag, "_score_chunk", side_effect=[9.5, 2.0, 7.5]):
+            chunks = ["chunk_A", "chunk_B", "chunk_C"]
+            reranked = rag._rerank("test query", chunks, top_k=3)
+
+        assert reranked[0] == "chunk_A"  # score 9.5 → first
+        assert reranked[1] == "chunk_C"  # score 7.5 → second
+        assert reranked[2] == "chunk_B"  # score 2.0 → last
+
+    @patch("backend.modules.rag.rerank_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.rerank_rag.Groq")
+    def test_rerank_fetches_more_candidates(self, mock_groq, mock_chroma):
+        """retrieve() must fetch top_k * multiplier candidates."""
+
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {"documents": [[]]}
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+
+        mock_groq.return_value.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="answer"))]
+        )
+
+        rag = ReRankRAG(candidates_multiplier=3)
+        query = RAGQuery(query_text="Test", top_k=5)
+        rag.retrieve(query)
+
+        # Must have requested 5 * 3 = 15 candidates
+        call_args = mock_collection.query.call_args
+        assert call_args[1]["n_results"] == 15
 
