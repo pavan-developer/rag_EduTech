@@ -19,6 +19,7 @@ from .step_back_rag import StepBackRAG
 from .raptor_rag import RaptorRAG
 from .corrective_rag import CorrectiveRAG
 from .speculative_rag import SpeculativeRAG
+from .fusion_rag import FusionRAG
 
 __all__ = [
     "BaseRAG", "RAGQuery", "RAGResult",
@@ -26,5 +27,5 @@ __all__ = [
     "SelfQueryRAG", "ParentDocumentRAG", "EnsembleRAG",
     "AdaptiveRAG", "GraphRAG", "MultiQueryRAG",
     "StepBackRAG", "RaptorRAG", "CorrectiveRAG",
-    "SpeculativeRAG",
+    "SpeculativeRAG", "FusionRAG",
 ]

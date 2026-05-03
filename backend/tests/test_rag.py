@@ -8,7 +8,7 @@
 
 import pytest
 from unittest.mock import MagicMock, patch
-from backend.modules.rag import NaiveRAG, HybridRAG, ContextualRAG, SelfQueryRAG, ParentDocumentRAG, EnsembleRAG, AdaptiveRAG, GraphRAG, MultiQueryRAG, StepBackRAG, RaptorRAG, CorrectiveRAG, SpeculativeRAG, RAGQuery, RAGResult
+from backend.modules.rag import NaiveRAG, HybridRAG, ContextualRAG, SelfQueryRAG, ParentDocumentRAG, EnsembleRAG, AdaptiveRAG, GraphRAG, MultiQueryRAG, StepBackRAG, RaptorRAG, CorrectiveRAG, SpeculativeRAG, FusionRAG, RAGQuery, RAGResult
 
 class TestNaiveRAG:
     """Tests for NaiveRAG pipeline."""
@@ -1409,3 +1409,94 @@ class TestSpeculativeRAG:
 
 
 #==========================================================
+
+
+
+
+
+class TestFusionRAG:
+    """Tests for FusionRAG pipeline."""
+
+    @patch("backend.modules.rag.fusion_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.fusion_rag.Groq")
+    def test_fusion_rag_returns_rag_result(self, mock_groq, mock_chroma):
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {
+            "documents": [["Newton's second law states F=ma."]]
+        }
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+
+        mock_variations = MagicMock()
+        mock_variations.message.content = "What is force equals mass times acceleration?\nExplain F=ma formula"
+
+        mock_answer = MagicMock()
+        mock_answer.message.content = "Newton's second law: F=ma"
+
+        mock_groq.return_value.chat.completions.create.side_effect = [
+            MagicMock(choices=[mock_variations]),
+            MagicMock(choices=[mock_answer]),
+        ]
+
+        rag = FusionRAG()
+        query = RAGQuery(query_text="What is Newton's second law?", top_k=1)
+        result = rag.run(query)
+
+        assert isinstance(result, RAGResult)
+        assert result.rag_type == "fusion"
+        assert len(result.answer) > 0
+
+    @patch("backend.modules.rag.fusion_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.fusion_rag.Groq")
+    def test_fusion_rrf_ranks_consistently_high_chunk_first(self, mock_groq, mock_chroma):
+        """Chunk ranked high in multiple searches must score highest."""
+
+        mock_groq.return_value.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="variation query"))]
+        )
+
+        rag = FusionRAG()
+
+        # chunk_B ranked #1 in list 1, #2 in list 2
+        # chunk_A ranked #2 in list 1, #1 in list 2
+        ranked_lists = [
+            ["chunk_B", "chunk_A", "chunk_C"],
+            ["chunk_A", "chunk_B", "chunk_C"],
+        ]
+
+        result = rag._rrf_score(ranked_lists)
+
+        # Both chunk_A and chunk_B have same total RRF — chunk_B appears first
+        assert "chunk_A" in result
+        assert "chunk_B" in result
+        assert "chunk_C" in result
+
+    @patch("backend.modules.rag.fusion_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.fusion_rag.Groq")
+    def test_fusion_handles_empty_search_results(self, mock_groq, mock_chroma):
+        """FusionRAG must handle empty ChromaDB results gracefully."""
+
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {"documents": [[]]}
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+
+        mock_groq.return_value.chat.completions.create.side_effect = [
+            MagicMock(choices=[MagicMock(message=MagicMock(content="variation"))]),
+            MagicMock(choices=[MagicMock(message=MagicMock(content="fallback answer"))]),
+        ]
+
+        rag = FusionRAG()
+        query = RAGQuery(query_text="Unknown topic", top_k=3)
+        result = rag.run(query)
+
+        assert isinstance(result, RAGResult)
+        assert result.rag_type == "fusion"
+
+
+
+
+#===============================================================
+
+
+
+
+
