@@ -17,6 +17,7 @@ from .graph_rag import GraphRAG
 from .multi_query_rag import MultiQueryRAG
 from .step_back_rag import StepBackRAG
 from .raptor_rag import RaptorRAG
+from .corrective_rag import CorrectiveRAG
 
 __all__ = [
     "BaseRAG",
@@ -33,4 +34,5 @@ __all__ = [
     "MultiQueryRAG",
     "StepBackRAG",
     "RaptorRAG",
+    "CorrectiveRAG",
 ]

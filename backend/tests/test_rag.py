@@ -8,7 +8,7 @@
 
 import pytest
 from unittest.mock import MagicMock, patch
-from backend.modules.rag import NaiveRAG, HybridRAG, ContextualRAG, SelfQueryRAG, ParentDocumentRAG, EnsembleRAG, AdaptiveRAG, GraphRAG, MultiQueryRAG, StepBackRAG, RaptorRAG, RAGQuery, RAGResult
+from backend.modules.rag import NaiveRAG, HybridRAG, ContextualRAG, SelfQueryRAG, ParentDocumentRAG, EnsembleRAG, AdaptiveRAG, GraphRAG, MultiQueryRAG, StepBackRAG, RaptorRAG, CorrectiveRAG, RAGQuery, RAGResult
 
 class TestNaiveRAG:
     """Tests for NaiveRAG pipeline."""
@@ -1197,3 +1197,119 @@ class TestRaptorRAG:
         # Must contain both raw chunks AND summary
         assert "Raw chunk about photosynthesis." in chunks
         assert "Photosynthesis summary covering all aspects." in chunks
+
+
+
+
+#======================================================
+
+
+
+class TestCorrectiveRAG:
+    """Tests for CorrectiveRAG pipeline."""
+
+    @patch("backend.modules.rag.corrective_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.corrective_rag.Groq")
+    def test_corrective_rag_returns_rag_result(self, mock_groq, mock_chroma):
+        """CorrectiveRAG.run() must return a RAGResult object."""
+
+        # Mock ChromaDB
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {
+            "documents": [["CRISPR is a gene editing technology."]]
+        }
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+
+        # Mock Groq — first call grades chunk, second call answers
+        mock_grade = MagicMock()
+        mock_grade.message.content = "relevant"
+
+        mock_answer = MagicMock()
+        mock_answer.message.content = "CRISPR is used for gene editing."
+
+        mock_groq.return_value.chat.completions.create.side_effect = [
+            MagicMock(choices=[mock_grade]),
+            MagicMock(choices=[mock_answer]),
+        ]
+
+        rag = CorrectiveRAG()
+        query = RAGQuery(query_text="What is CRISPR?", top_k=1)
+        result = rag.run(query)
+
+        assert isinstance(result, RAGResult)
+        assert result.rag_type == "corrective"
+        assert len(result.answer) > 0
+
+    @patch("backend.modules.rag.corrective_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.corrective_rag.Groq")
+    def test_corrective_filters_irrelevant_chunks(self, mock_groq, mock_chroma):
+        """CorrectiveRAG must filter out irrelevant chunks."""
+
+        # Mock ChromaDB with mixed chunks
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {
+            "documents": [[
+                "CRISPR is a gene editing technology.",
+                "Crispy fried chicken recipe with herbs.",
+            ]]
+        }
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+
+        # Mock Groq — grade relevant, then irrelevant, then answer
+        mock_relevant = MagicMock()
+        mock_relevant.message.content = "relevant"
+
+        mock_irrelevant = MagicMock()
+        mock_irrelevant.message.content = "irrelevant"
+
+        mock_answer = MagicMock()
+        mock_answer.message.content = "CRISPR edits genes."
+
+        mock_groq.return_value.chat.completions.create.side_effect = [
+            MagicMock(choices=[mock_relevant]),    # grade chunk 1
+            MagicMock(choices=[mock_irrelevant]),  # grade chunk 2
+            MagicMock(choices=[mock_answer]),      # generate answer
+        ]
+
+        rag = CorrectiveRAG()
+        query = RAGQuery(query_text="What is CRISPR?", top_k=5)
+        chunks = rag.retrieve(query)
+
+        # Irrelevant chunk must be filtered out
+        assert "Crispy fried chicken recipe with herbs." not in chunks
+        assert "CRISPR is a gene editing technology." in chunks
+
+    @patch("backend.modules.rag.corrective_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.corrective_rag.Groq")
+    def test_corrective_triggers_fallback(self, mock_groq, mock_chroma):
+        """CorrectiveRAG must trigger web fallback when too many irrelevant."""
+
+        # Mock ChromaDB with all irrelevant chunks
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {
+            "documents": [[
+                "Crispy fried chicken recipe.",
+                "Best pizza toppings guide.",
+            ]]
+        }
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+
+        # Mock Groq — all chunks graded irrelevant
+        mock_irrelevant = MagicMock()
+        mock_irrelevant.message.content = "irrelevant"
+
+        mock_answer = MagicMock()
+        mock_answer.message.content = "Fallback answer about CRISPR."
+
+        mock_groq.return_value.chat.completions.create.side_effect = [
+            MagicMock(choices=[mock_irrelevant]),  # grade chunk 1
+            MagicMock(choices=[mock_irrelevant]),  # grade chunk 2
+            MagicMock(choices=[mock_answer]),      # generate answer
+        ]
+
+        rag = CorrectiveRAG()
+        query = RAGQuery(query_text="What is CRISPR?", top_k=5)
+        chunks = rag.retrieve(query)
+
+        # Must trigger fallback — chunks contain fallback message
+        assert any("fallback" in chunk.lower() for chunk in chunks)
