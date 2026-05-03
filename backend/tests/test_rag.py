@@ -8,7 +8,7 @@
 
 import pytest
 from unittest.mock import MagicMock, patch
-from backend.modules.rag import NaiveRAG, HybridRAG, ContextualRAG, SelfQueryRAG, ParentDocumentRAG, EnsembleRAG, AdaptiveRAG, GraphRAG, MultiQueryRAG, StepBackRAG, RaptorRAG, CorrectiveRAG, RAGQuery, RAGResult
+from backend.modules.rag import NaiveRAG, HybridRAG, ContextualRAG, SelfQueryRAG, ParentDocumentRAG, EnsembleRAG, AdaptiveRAG, GraphRAG, MultiQueryRAG, StepBackRAG, RaptorRAG, CorrectiveRAG, SpeculativeRAG, RAGQuery, RAGResult
 
 class TestNaiveRAG:
     """Tests for NaiveRAG pipeline."""
@@ -1313,3 +1313,99 @@ class TestCorrectiveRAG:
 
         # Must trigger fallback — chunks contain fallback message
         assert any("fallback" in chunk.lower() for chunk in chunks)
+
+
+
+
+
+
+
+#================================================
+
+
+
+
+
+class TestSpeculativeRAG:
+    """Tests for SpeculativeRAG pipeline."""
+
+    @patch("backend.modules.rag.speculative_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.speculative_rag.Groq")
+    def test_speculative_rag_returns_rag_result(self, mock_groq, mock_chroma):
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {
+            "documents": [["Thunder is caused by rapid air expansion."]]
+        }
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+
+        mock_hypothesis = MagicMock()
+        mock_hypothesis.message.content = "Thunder occurs when lightning superheats air causing rapid expansion."
+
+        mock_answer = MagicMock()
+        mock_answer.message.content = "Thunder is caused by lightning heating air rapidly."
+
+        mock_groq.return_value.chat.completions.create.side_effect = [
+            MagicMock(choices=[mock_hypothesis]),
+            MagicMock(choices=[mock_answer]),
+        ]
+
+        rag = SpeculativeRAG()
+        query = RAGQuery(query_text="What causes thunder?", top_k=1)
+        result = rag.run(query)
+
+        assert isinstance(result, RAGResult)
+        assert result.rag_type == "speculative"
+        assert len(result.answer) > 0
+
+    @patch("backend.modules.rag.speculative_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.speculative_rag.Groq")
+    def test_speculative_searches_with_hypothesis(self, mock_groq, mock_chroma):
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {
+            "documents": [["Thunder explanation chunk."]]
+        }
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+
+        mock_hypothesis = MagicMock()
+        mock_hypothesis.message.content = "Thunder is caused by lightning heating air."
+        mock_groq.return_value.chat.completions.create.return_value = MagicMock(
+            choices=[mock_hypothesis]
+        )
+
+        rag = SpeculativeRAG()
+        query = RAGQuery(query_text="What causes thunder?", top_k=1)
+        rag.retrieve(query)
+
+        # ChromaDB must be called with hypothesis not original query
+        call_args = mock_collection.query.call_args
+        search_query = call_args[1]["query_texts"][0]
+        assert search_query != "What causes thunder?"
+
+    @patch("backend.modules.rag.speculative_rag.chromadb.PersistentClient")
+    @patch("backend.modules.rag.speculative_rag.Groq")
+    def test_speculative_fallback_on_hypothesis_failure(self, mock_groq, mock_chroma):
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {
+            "documents": [["Fallback chunk."]]
+        }
+        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+
+        mock_answer = MagicMock()
+        mock_answer.message.content = "Fallback answer."
+
+        mock_groq.return_value.chat.completions.create.side_effect = [
+            Exception("Groq down"),
+            MagicMock(choices=[mock_answer]),
+        ]
+
+        rag = SpeculativeRAG()
+        query = RAGQuery(query_text="What causes thunder?", top_k=1)
+        result = rag.run(query)
+
+        assert isinstance(result, RAGResult)
+        assert result.rag_type == "speculative"
+
+
+
+
+#==========================================================

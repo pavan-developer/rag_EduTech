@@ -18,21 +18,13 @@ from .multi_query_rag import MultiQueryRAG
 from .step_back_rag import StepBackRAG
 from .raptor_rag import RaptorRAG
 from .corrective_rag import CorrectiveRAG
+from .speculative_rag import SpeculativeRAG
 
 __all__ = [
-    "BaseRAG",
-    "RAGQuery",
-    "RAGResult",
-    "NaiveRAG",
-    "HybridRAG",
-    "ContextualRAG",
-    "SelfQueryRAG",
-    "ParentDocumentRAG",
-    "EnsembleRAG",
-    "AdaptiveRAG",
-    "GraphRAG",
-    "MultiQueryRAG",
-    "StepBackRAG",
-    "RaptorRAG",
-    "CorrectiveRAG",
+    "BaseRAG", "RAGQuery", "RAGResult",
+    "NaiveRAG", "HybridRAG", "ContextualRAG",
+    "SelfQueryRAG", "ParentDocumentRAG", "EnsembleRAG",
+    "AdaptiveRAG", "GraphRAG", "MultiQueryRAG",
+    "StepBackRAG", "RaptorRAG", "CorrectiveRAG",
+    "SpeculativeRAG",
 ]
